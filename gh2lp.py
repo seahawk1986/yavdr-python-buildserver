@@ -12,7 +12,6 @@ import hashlib
 import hmac
 import datetime
 import json
-import pprint
 import os
 import shutil
 import signal
@@ -22,6 +21,7 @@ import sys
 import tempfile
 import threading
 
+version = "0.1.3"
 config = None
 server = None
 
@@ -47,7 +47,6 @@ class Config:
         argparser.add_argument('--branch', metavar='BRANCH', dest='branch', default=None, help='name of the branch to clone')
         argparser.add_argument('--urgency', metavar='URGENCY', dest='urgency', default="medium", help='urgency of the build')
         self.args = vars(argparser.parse_args())
-        pprint.PrettyPrinter().pprint(self.args)
         self.configparser = configparser.SafeConfigParser()
         if "config" in self.args:
             self.configparser.read(self.args["config"])
@@ -87,6 +86,9 @@ class Config:
         self.server_port = int(self.get_setting("Server", "port", "8180"))
         self.smtp_server = self.get_setting("Server", "smtp_server", None)
         self.smtp_sender = self.get_setting("Server", "smtp_sender", None)
+        self.smtp_tls = self.get_settingb("Server", "smtp_tls", False)
+        self.smtp_user = self.get_setting("Server", "smtp_user", None)
+        self.smtp_password = self.get_setting("Server", "smtp_password", None)
         if not self.smtp_sender:
             self.smtp_server = None
         
@@ -249,6 +251,7 @@ class Build(threading.Thread):
                  self.git_url,
                  "--create",
                  "--distribution={}".format(self.release),
+                 "--force-distribution",
                  "-u", self.urgency,
                  "--package", self.name
                  ],
@@ -292,6 +295,10 @@ class Build(threading.Thread):
                 msg['From'] = self.config.smtp_sender
                 msg['To'] = self.pusher_email
                 s = smtplib.SMTP(self.config.smtp_server)
+                if self.config.smtp_tls:
+                    s.starttls()
+                if self.config.smtp_user and self.config.smtp_password:
+                    s.login(self.config.smtp_user, self.config.smtp_password)
                 s.send_message(msg)
                 s.quit()
 
@@ -320,7 +327,11 @@ class GithubHookHandler(BaseHTTPRequestHandler):
 
             # HMAC requires its key to be bytes, but data is strings.
             mac = hmac.new(config.HOOK_SECRET_KEY, msg=data, digestmod=hashlib.sha1)
-            return hmac.compare_digest(mac.hexdigest(), signature)
+            try:
+                return hmac.compare_digest(mac.hexdigest(), signature)
+            except:
+                pass
+            return mac.hexdigest() == signature
         else:
             return True
 
@@ -335,7 +346,10 @@ class GithubHookHandler(BaseHTTPRequestHandler):
         # first send response
         self.send_response(200)
         self.end_headers()
-        self.flush_headers()
+        try:
+            self.flush_headers()
+        except AttributeError:
+            pass
         # then handle request, so that no timeout occurs (hopefully)
         payload = json.loads(post_data.decode('utf-8'))
         self.handle_payload(payload)
@@ -362,8 +376,6 @@ def main():
     global config
     global server
     config = Config()
-    pp = pprint.PrettyPrinter()
-    pp.pprint(vars(config))
     if config.direct_build:
         build = Build(config)
         build.fromargs(config.args)
@@ -374,6 +386,6 @@ def main():
 
 
 if __name__ == '__main__':
-    print("GitHub-Launchpad-BuildServer started with PID ", os.getpid())
+    print("GitHub-to-Launchpad-BuildServer version {0} started with PID {1}".format(version, os.getpid()))
     signal.signal(signal.SIGTERM, sighandler)
     main()
